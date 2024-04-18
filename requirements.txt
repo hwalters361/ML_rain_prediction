@@ -36,6 +36,7 @@ et-xmlfile==1.1.0
 exceptiongroup==1.2.0
 executing==1.2.0
 fastjsonschema==2.19.1
+ffmpeg==1.4
 filelock==3.13.1
 fiona==1.9.5
 fire==0.6.0
