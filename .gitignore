@@ -1,5 +1,5 @@
 .DS*
-
+*.npz
 data/
 
 Results/
