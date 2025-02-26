@@ -244,13 +244,13 @@ def run_experiment(trainloader, testloader, validloader):
     )
 
     # Train the model.
-    _ = model.fit(trainloader, epochs=EPOCHS, validation_data=validloader)
+    history = model.fit(trainloader, epochs=EPOCHS, validation_data=validloader)
 
     _, accuracy, top_5_accuracy = model.evaluate(testloader)
     print(f"Test accuracy: {round(accuracy * 100, 2)}%")
     print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
 
-    return model
+    return (model, history)
 
 
 # model = run_experiment()

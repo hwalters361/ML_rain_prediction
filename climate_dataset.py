@@ -338,4 +338,107 @@ def build_dataloader(cfg, save_dir=None):
     train_num, test_num = train_dataset.__len__(), test_dataset.__len__()
 
     return train_dataloader, test_dataloader, train_num, test_num
-    
+
+def get_month_year(file_name, dtype="ppt"):
+    """Get month and year from file name"""
+    if dtype == "ppt":
+        time = pd.Timestamp("-".join(file_name.split(".")[0].split("_")[1:]))
+        month, year = time.month, time.year
+    elif dtype == "sst":
+        year, month = file_name.split(".")[-2][-6:-2], file_name.split(".")[-2][-2:]
+        month, year = int(month), int(year)
+    else:
+        print(f"dtype {dtype} not implemented. Use ppt or sst.")
+        month, year = None, None
+    return month, year
+
+def get_filenames(directory):
+    filenames = sorted(os.listdir(directory))
+    return [f for f in filenames if f.endswith(".nc")]
+
+def get_path(directory, filename):
+    return os.path.join(directory, filename)
+
+def get_basename(path):
+    return os.path.basename(path)
+
+def read_xr(path, dtype="ppt"):
+    """Read xarray file"""
+    file_data = xr.load_dataset(path, engine="netcdf4")
+    file_name = get_basename(path)
+    month, year = get_month_year(file_name, dtype)
+    xr_data = [file_name, year, month]
+
+    if dtype == "ppt":
+        file_data = file_data.rename_vars(
+            {list(file_data.keys())[1]: "ppt", "longitude": "lon", "latitude": "lat"}
+        )
+
+        # Coarsen data to reduce resolution
+        file_data = file_data.coarsen(latitude=4, longitude=4, boundary="trim").mean()
+        #         file_data = file_data.sel(longitude=slice(-300, -100))
+
+        ##Slice for west coast
+        file_data = file_data.sel(longitude=slice(0, 150))
+
+        xr_data.append(file_data.ppt.values)
+        columns = list("FYMD")
+        columns[-1] = "ppt"
+
+    elif dtype == "sst":
+        # Coarsen data to reduce resolution
+        #         file_data = file_data.coarsen(lat = 4, lon = 4, boundary = "trim").mean()
+
+        ##Slice for west coast
+        #         file_data = file_data.sel(lon=slice(100, 400))
+
+        xr_data.extend([file_data.sst.values, file_data.ssta.values])
+        columns = list("FYMDA")
+        columns[-2], columns[-1] = "sst", "ssta"
+
+    else:
+        print(f"dtype {dtype} not implemented. Use ppt or sst.")
+
+    longitude, latitude = file_data.lon.values, file_data.lat.values
+    return xr_data, longitude, latitude, columns
+
+def load_data(directory, dtype="ppt"):
+    """Load directory files in a pandas dataframe"""
+    filenames = get_filenames(directory)
+    data_info_list = []
+    for i, file_name in tqdm(enumerate(filenames)):
+        path = get_path(directory, file_name)
+        xr_data, longitude, latitude, columns = read_xr(path, dtype)
+        data_info_list.append(xr_data)
+    df = pd.DataFrame([p for p in data_info_list], columns=columns)
+    return df, latitude, longitude
+
+
+def average_clusters(image, cluster_array, return_image=True):
+    """Average the values of each cluster in the image"""
+    unique_clusters = np.unique(cluster_array)  # Find unique cluster labels
+
+    if return_image:
+        # Initialize an array to store the average values
+        averaged_image = np.zeros_like(image, dtype=float)
+    else:
+        cluster_averages = []
+
+    for cluster_label in unique_clusters:
+        # Mask the original image with the current cluster label
+        masked_image = np.where(cluster_array == cluster_label, image, 0)
+
+        # Calculate the average value for the current cluster
+        cluster_size = np.sum(cluster_array == cluster_label)
+        cluster_average = np.sum(masked_image) / cluster_size
+
+        if return_image:
+            # Replace pixels in the averaged image with the cluster average
+            averaged_image += np.where(
+                cluster_array == cluster_label, cluster_average, 0
+            )
+        else:
+            cluster_averages.append(cluster_average)
+
+    return averaged_image if return_image else np.array(cluster_averages)
+
