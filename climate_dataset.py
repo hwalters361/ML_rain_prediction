@@ -442,3 +442,54 @@ def average_clusters(image, cluster_array, return_image=True):
 
     return averaged_image if return_image else np.array(cluster_averages)
 
+def aggregate_clusters(image, cluster_array, return_image=True):
+    """Accumulate the values of each cluster in the image (sum together all points within the map)"""
+    unique_clusters = np.unique(cluster_array)  # Find unique cluster labels
+
+    if return_image:
+        aggregate_image = np.zeros_like(image, dtype=float)
+    else:
+        cluster_aggregates = []
+    
+    for cluster_label in unique_clusters:
+        masked_image = np.where(cluster_array == cluster_label, image, 0)
+        cluster_aggregate = np.sum(masked_image)
+
+        if return_image:
+            aggregate_image += np.where(
+                cluster_array == cluster_label, cluster_aggregate, 0
+            )
+        else:
+            cluster_aggregates.append(cluster_aggregate)
+    
+    return aggregate_image if return_image else np.array(cluster_aggregates)
+
+def std_clusters(image, cluster_array, return_image=True):
+    unique_clusters = np.unique(cluster_array)
+    if return_image:
+        std_image = np.zeros_like(image, dtype=float)
+    else:
+        all_cluster_stds = []
+    
+    
+    for cluster_label in unique_clusters:
+
+        cluster_values = image[cluster_array == cluster_label]
+
+        if cluster_values.size > 1:
+            cluster_std = np.std(cluster_values)
+        else:
+            cluster_std = 0  # If only one value, std is 0
+
+        # std_image[cluster_array == cluster_label] = cluster_std
+        # masked_image = np.where(cluster_array == cluster_label, image, 0)
+        # cluster_stddev = np.std(masked_image)
+
+        if return_image:
+            std_image += np.where(
+                cluster_array == cluster_label, cluster_std, 0
+            )
+        else:
+            all_cluster_stds.append(cluster_std)
+    
+    return std_image if return_image else np.array(all_cluster_stds)
