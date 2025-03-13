@@ -28,14 +28,13 @@ BATCH_SIZE = 32
 AUTO = tf.data.AUTOTUNE
 INPUT_SHAPE = (24, 89, 180, 1)
 NUM_CLASSES = 4
-NUM_CLUSTERS = 9
 
 # OPTIMIZER
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-5
 
 # TRAINING
-EPOCHS = 100 # Originally 60
+EPOCHS = 15 # Originally 60
 
 # TUBELET EMBEDDING
 PATCH_SIZE = (8, 8, 8)
@@ -57,7 +56,7 @@ def download_and_prepare_dataset(data_path):
     """Utility function to download the dataset.
 
     Arguments:
-        data_path (string): Path to the dataset (npz format)
+        data_path (string): Path to the dataset
     """
     
     with np.load(data_path, allow_pickle=True) as data:
@@ -160,22 +159,16 @@ class PositionalEncoder(layers.Layer):
 
     def build(self, input_shape):
         _, num_tokens, _ = input_shape
-
-        # Generate fixed sinusoidal positional encoding
-        position = np.arange(num_tokens)[:, np.newaxis]
-        div_term = np.exp(np.arange(0, self.embed_dim, 2) * (-np.log(10000.0) / self.embed_dim))
-
-        pos_enc = np.zeros((num_tokens, self.embed_dim))
-        pos_enc[:, 0::2] = np.sin(position * div_term)  # Apply sine to even indices
-        pos_enc[:, 1::2] = np.cos(position * div_term)  # Apply cosine to odd indices
-
-        # Store as a TensorFlow constant
-        self.position_embedding = tf.convert_to_tensor(pos_enc, dtype=tf.float32)
+        self.position_embedding = layers.Embedding(
+            input_dim=num_tokens, output_dim=self.embed_dim
+        )
+        self.positions = ops.arange(0, num_tokens, 1)
 
     def call(self, encoded_tokens):
-        # Add fixed positional encoding
-        return encoded_tokens + self.position_embedding
-
+        # Encode the positions and add it to the encoded tokens
+        encoded_positions = self.position_embedding(self.positions)
+        encoded_tokens = encoded_tokens + encoded_positions
+        return encoded_tokens
 
 def create_vivit_classifier(
     tubelet_embedder,
@@ -222,7 +215,7 @@ def create_vivit_classifier(
     representation = layers.GlobalAvgPool1D()(representation)
 
     # Classify outputs.
-    outputs = [layers.Dense(units=num_classes, activation="softmax")(representation) for x in range(NUM_CLUSTERS)]
+    outputs = layers.Dense(units=num_classes, activation="softmax")(representation)
 
     # Create the Keras model.
     model = keras.Model(inputs=inputs, outputs=outputs)
@@ -251,13 +244,13 @@ def run_experiment(trainloader, testloader, validloader):
     )
 
     # Train the model.
-    history = model.fit(trainloader, epochs=EPOCHS, validation_data=validloader)
+    _ = model.fit(trainloader, epochs=EPOCHS, validation_data=validloader)
 
     _, accuracy, top_5_accuracy = model.evaluate(testloader)
     print(f"Test accuracy: {round(accuracy * 100, 2)}%")
     print(f"Test top 5 accuracy: {round(top_5_accuracy * 100, 2)}%")
 
-    return (model, history)
+    return model
 
 
 # model = run_experiment()
