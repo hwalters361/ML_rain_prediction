@@ -493,3 +493,72 @@ def std_clusters(image, cluster_array, return_image=True):
             all_cluster_stds.append(cluster_std)
     
     return std_image if return_image else np.array(all_cluster_stds)
+
+
+def z_score_clusters(image, cluster_array, allmonths_cluster_std, allmonths_cluster_mean, return_image=True):
+    '''
+    for each cluster, takes the current sample, finds the average for each cluster, and finds the z-score relative to the overall
+    cluster mean and cluster standard deviation.
+    '''
+    unique_clusters = np.unique(cluster_array)
+    if return_image:
+        z_score_image = np.zeros_like(image, dtype=float)
+    else:
+        all_cluster_z_score = []
+    
+    
+    for cluster_label in unique_clusters:
+
+        cluster_values = image[cluster_array == cluster_label]
+
+        if cluster_values.size > 1:
+            cluster_z_score = np.mean(cluster_values) - allmonths_cluster_mean[int(cluster_label)] / allmonths_cluster_std[int(cluster_label)]
+        else:
+            cluster_z_score = 0  # If only one value, std is 0
+
+        # std_image[cluster_array == cluster_label] = cluster_std
+        # masked_image = np.where(cluster_array == cluster_label, image, 0)
+        # cluster_stddev = np.std(masked_image)
+
+        if return_image:
+            z_score_image += np.where(
+                cluster_array == cluster_label, cluster_z_score, 0
+            )
+        else:
+            all_cluster_z_score.append(cluster_z_score)
+    
+    return z_score_image if return_image else np.array(all_cluster_z_score)
+
+
+
+def z_score_pixels(image, cluster_array, allmonths_cluster_std, allmonths_cluster_mean):
+    '''
+    for each cluster, takes the current sample, finds the average for each cluster, and finds the z-score relative to the overall
+    cluster mean and cluster standard deviation.
+
+    Only returns the full image since the z-score is evaluated per pixel and not per cluster.
+    '''
+    unique_clusters = np.unique(cluster_array)
+
+    z_score_image = np.zeros_like(image, dtype=float)
+    
+    
+    for cluster_label in unique_clusters:
+
+        cluster_values = image[cluster_array == cluster_label]
+
+        if cluster_values.size > 1:
+            cluster_z_score = cluster_values - allmonths_cluster_mean[int(cluster_label)] / allmonths_cluster_std[int(cluster_label)]
+        else:
+            cluster_z_score = np.zeros_like(image, dtype=float)  # If only one value, std is 0
+
+        # std_image[cluster_array == cluster_label] = cluster_std
+        # masked_image = np.where(cluster_array == cluster_label, image, 0)
+        # cluster_stddev = np.std(masked_image)
+
+        # z_score_image += np.where(
+        #     cluster_array == cluster_label, cluster_z_score, 0
+        # )
+    
+    return cluster_z_score
+

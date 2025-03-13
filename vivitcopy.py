@@ -7,9 +7,10 @@ import torch.utils.data as data
 
 # Setting seed for reproducibility
 SEED = 42
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 torch.manual_seed(SEED)
 
-data_path = "sst.npz"
+data_path = "data/cluster_1_sst.npz"
 
 # Constants
 BATCH_SIZE = 32
