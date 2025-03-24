@@ -266,7 +266,7 @@ def run_experiment(trainloader, testloader, validloader):
         return train_losses, val_losses
 
     # Run training
-    train_losses, val_losses = train_model(model, train_loader, valid_loader)
+    # train_losses, val_losses = train_model(model, train_loader, valid_loader)
 
 
     # def run_experiment(trainloader, testloader, validloader):
