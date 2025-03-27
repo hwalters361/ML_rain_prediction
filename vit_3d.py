@@ -105,9 +105,10 @@ class ViT(nn.Module):
 
         num_patches = (image_height // patch_height) * (image_width // patch_width) * (frames // frame_patch_size)
         patch_dim = channels * patch_height * patch_width * frame_patch_size
+        print(f'Number of Patches {num_patches} Patch dim {patch_dim}')
 
         assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
-
+        # [b, f, d, h, w] = [32, 24, 96, 184, 1]
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (f pf) (h p1) (w p2) -> b (f h w) (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
             nn.LayerNorm(patch_dim),
@@ -131,16 +132,22 @@ class ViT(nn.Module):
 
     def forward(self, video):
         # convert video to a pytorch tensor
-        video = torch.tensor(video.numpy())
+        # video = torch.tensor(video.numpy())
+        # video = video.squeeze(-1)  # Remove the extra singleton dimension at the end
+
+        # print(f'video shape {video.shape}')
         # Pad width dimension if necessary
         b, c, f, h, w = video.shape
-        print(f'video shape before {video.shape}')
-        print(f'pad height {self.pad_height} pad width {self.pad_width}')
+        # print(f'video shape before {video.shape}')
+        # print(f'pad height {self.pad_height} pad width {self.pad_width}')
         if self.pad_width != 0 or self.pad_height != 0:
-            padding = (0,0, self.pad_width,0, self.pad_height,0 )
+            # torch.Size([32, 1, 24, 89, 180])
+            padding = (self.pad_width,0, self.pad_height,0 )
             video = F.pad(video, padding)  # Pad width dimension
-        
-        print(f'Video shape after {video.shape}')
+
+        # video = video.permute(0, 4, 1, 2, 3)  # Moves 'w' to the channel position
+        # print(f'Video shape after {video.shape}')
+
         x = self.to_patch_embedding(video)
         b, n, _ = x.shape
 
@@ -190,16 +197,18 @@ def run_experiment(trainloader, validloader, testloader):
     # PATCH_SIZE = (8, 8, 8)
     # INPUT_SHAPE = (24, 89, 180, 1)
     # Define model
+    # def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
     model = ViT(
         image_size=(89,180),  
-        image_patch_size=(8, 4),
+        image_patch_size=(8, 8),
         frames=24, 
         frame_patch_size=8,
         num_classes=4, 
         dim=512,
         depth=6,
         heads=8,
-        mlp_dim=1024
+        mlp_dim=1024,
+        channels=1,
     )
     # .cuda()  # Move to GPU if available
 
@@ -217,8 +226,6 @@ def run_experiment(trainloader, validloader, testloader):
             total_loss, correct, total = 0, 0, 0
             
             for videos, labels in trainloader:
-                # videos, labels = videos.cuda(), labels.cuda()
-                
                 optimizer.zero_grad()
                 outputs = model(videos)
                 loss = criterion(outputs, labels)
