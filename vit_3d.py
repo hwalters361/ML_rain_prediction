@@ -204,10 +204,11 @@ def run_experiment(trainloader, validloader, testloader):
         frames=24, 
         frame_patch_size=8,
         num_classes=4, 
-        dim=512,
-        depth=6,
-        heads=8,
-        mlp_dim=1024,
+        dim=128, # initially 512
+        depth=4, # initially 6
+        heads=4, # initially 8
+        dim_head= 32, #initially 64
+        mlp_dim=256, # initially 1024
         channels=1,
     )
     # .cuda()  # Move to GPU if available
@@ -280,10 +281,11 @@ def run_experiment(trainloader, validloader, testloader):
         print(f"Test Accuracy: {correct / total:.4f}")
 
     # Train the model
-    train(model, trainloader, validloader, criterion, optimizer, epochs=10)
+    history = train(model, trainloader, validloader, criterion, optimizer, epochs=10)
 
     # Run evaluation
     test(model, testloader)
+    return model, history
 
 
 def save_model(model, path="savedmodels/vit3d_model.pth"):
