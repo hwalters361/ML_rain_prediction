@@ -75,11 +75,30 @@ class Transformer(nn.Module):
             x = ff(x) + x
         return x
 
+import torch.nn.functional as F
+
 class ViT(nn.Module):
     def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
         super().__init__()
+
+        ## Pad the input
+        self.pad_height = 0
+        self.pad_width = 0
+
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(image_patch_size)
+
+        print(f'image size {image_size} patch size {image_patch_size} frames {frames} frame_patch_size {frame_patch_size}')
+        # Pad the width to make it divisible by patch width
+        if image_width % patch_width != 0:
+            self.pad_width = patch_width - image_width % patch_width
+            image_width += self.pad_width
+            print(f"Padding width to {image_width} to make it divisible by {patch_width}")
+        
+        if image_height % patch_height != 0:
+            self.pad_height = patch_height - image_height % patch_height
+            image_height += self.pad_height
+            print(f"Padding height to {image_height} to make it divisible by {patch_height}")
 
         assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
         assert frames % frame_patch_size == 0, 'Frames must be divisible by frame patch size'
@@ -111,6 +130,17 @@ class ViT(nn.Module):
         )
 
     def forward(self, video):
+        # convert video to a pytorch tensor
+        video = torch.tensor(video.numpy())
+        # Pad width dimension if necessary
+        b, c, f, h, w = video.shape
+        print(f'video shape before {video.shape}')
+        print(f'pad height {self.pad_height} pad width {self.pad_width}')
+        if self.pad_width != 0 or self.pad_height != 0:
+            padding = (0,0, self.pad_width,0, self.pad_height,0 )
+            video = F.pad(video, padding)  # Pad width dimension
+        
+        print(f'Video shape after {video.shape}')
         x = self.to_patch_embedding(video)
         b, n, _ = x.shape
 
@@ -125,7 +155,7 @@ class ViT(nn.Module):
 
         x = self.to_latent(x)
         return self.mlp_head(x)
-    
+
 
 #### End of given code
 
@@ -152,24 +182,26 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch
 
-def run_experiment(trainset, validset, testset):
-    batch_size = 8  # Adjust as needed
-    trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
-    testloader = DataLoader(testset, batch_size=batch_size, shuffle=False)
-
+def run_experiment(trainloader, validloader, testloader):
+    # batch_size = 8  # Adjust as needed
+    # trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
+    # validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
+    # testloader = DataLoader(testset, batch_size=batch_size, shuffle=False)
+    # PATCH_SIZE = (8, 8, 8)
+    # INPUT_SHAPE = (24, 89, 180, 1)
     # Define model
     model = ViT(
-        image_size=224,  # Adjust based on input shape
-        image_patch_size=16,
-        frames=32,  # Adjust based on your dataset
-        frame_patch_size=4,
-        num_classes=10,  # Match your classification task
+        image_size=(89,180),  
+        image_patch_size=(8, 4),
+        frames=24, 
+        frame_patch_size=8,
+        num_classes=4, 
         dim=512,
         depth=6,
         heads=8,
         mlp_dim=1024
-    ).cuda()  # Move to GPU if available
+    )
+    # .cuda()  # Move to GPU if available
 
 
     criterion = torch.nn.CrossEntropyLoss()
@@ -185,7 +217,7 @@ def run_experiment(trainset, validset, testset):
             total_loss, correct, total = 0, 0, 0
             
             for videos, labels in trainloader:
-                videos, labels = videos.cuda(), labels.cuda()
+                # videos, labels = videos.cuda(), labels.cuda()
                 
                 optimizer.zero_grad()
                 outputs = model(videos)
@@ -213,7 +245,7 @@ def run_experiment(trainset, validset, testset):
         
         with torch.no_grad():
             for videos, labels in validloader:
-                videos, labels = videos.cuda(), labels.cuda()
+                # videos, labels = videos.cuda(), labels.cuda()
                 outputs = model(videos)
                 loss = criterion(outputs, labels)
                 
@@ -232,7 +264,7 @@ def run_experiment(trainset, validset, testset):
         
         with torch.no_grad():
             for videos, labels in testloader:
-                videos, labels = videos.cuda(), labels.cuda()
+                # videos, labels = videos.cuda(), labels.cuda()
                 outputs = model(videos)
                 _, predicted = torch.max(outputs, 1)
                 correct += (predicted == labels).sum().item()
