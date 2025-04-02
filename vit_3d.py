@@ -108,15 +108,17 @@ class ViT(nn.Module):
         print(f'Number of Patches {num_patches} Patch dim {patch_dim}')
 
         assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
-        # [b, f, d, h, w] = [32, 24, 96, 184, 1]
+        # [b, f, d, h, w] = [32, 1, 24, 89, 180]
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (f pf) (h p1) (w p2) -> b (f h w) (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
         )
-
+        # learned positional embedding. change it to a fixed positional embedding
+        # TODO: change learned pos embedding to fixed pos embed
         self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(emb_dropout)
 
@@ -145,8 +147,6 @@ class ViT(nn.Module):
             padding = (self.pad_width,0, self.pad_height,0 )
             video = F.pad(video, padding)  # Pad width dimension
 
-        # video = video.permute(0, 4, 1, 2, 3)  # Moves 'w' to the channel position
-        # print(f'Video shape after {video.shape}')
 
         x = self.to_patch_embedding(video)
         b, n, _ = x.shape
@@ -199,7 +199,7 @@ def run_experiment(trainloader, validloader, testloader):
     # Define model
     # def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
     model = ViT(
-        image_size=(89,180),  
+        image_size=(96,184),  
         image_patch_size=(8, 8),
         frames=24, 
         frame_patch_size=8,
