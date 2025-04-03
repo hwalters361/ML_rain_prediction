@@ -217,7 +217,7 @@ def run_experiment(trainloader, validloader, testloader):
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    def train(model, trainloader, validloader, criterion, optimizer, epochs=10):
+    def train(model, trainloader, validloader, criterion, optimizer, epochs=100):
         '''
         training loop for the 3d vit, also returns history object with training history
         '''
@@ -281,7 +281,7 @@ def run_experiment(trainloader, validloader, testloader):
         print(f"Test Accuracy: {correct / total:.4f}")
 
     # Train the model
-    history = train(model, trainloader, validloader, criterion, optimizer, epochs=10)
+    history = train(model, trainloader, validloader, criterion, optimizer, epochs=100)
 
     # Run evaluation
     test(model, testloader)
