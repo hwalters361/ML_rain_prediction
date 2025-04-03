@@ -4,13 +4,15 @@ from torch import nn
 
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
+import torch
+from positional_encodings.torch_encodings import *
 
 # helpers
 
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
 
-# classes
+# works with 9 classes
 
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
@@ -75,88 +77,76 @@ class Transformer(nn.Module):
             x = ff(x) + x
         return x
 
-import torch.nn.functional as F
-
 class ViT(nn.Module):
-    def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
+    def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'mean', channels = 1, dim_head = 64, dropout = 0., emb_dropout = 0.):
         super().__init__()
+        # because we are using sea surface temperature data, the number of channels is 1.
+        self.num_classes = num_classes # there should be 4 for sst data, quantized
+        self.num_outputs = 9  # Number of independent classifications. There are 9 since we have 9 clusters.
+        
 
-        ## Pad the input
-        self.pad_height = 0
-        self.pad_width = 0
-
+        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(image_patch_size)
 
-        print(f'image size {image_size} patch size {image_patch_size} frames {frames} frame_patch_size {frame_patch_size}')
-        # Pad the width to make it divisible by patch width
-        if image_width % patch_width != 0:
-            self.pad_width = patch_width - image_width % patch_width
-            image_width += self.pad_width
-            print(f"Padding width to {image_width} to make it divisible by {patch_width}")
+        assert image_width % patch_width == 0, f"Image Width {image_width} is not divisible by Patch Width: {patch_width}"
+        assert image_height % patch_height == 0, f"Image Height {image_height} is not divisible by Patch Height: {patch_height}"
         
-        if image_height % patch_height != 0:
-            self.pad_height = patch_height - image_height % patch_height
-            image_height += self.pad_height
-            print(f"Padding height to {image_height} to make it divisible by {patch_height}")
-
-        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
-        assert frames % frame_patch_size == 0, 'Frames must be divisible by frame patch size'
-
         num_patches = (image_height // patch_height) * (image_width // patch_width) * (frames // frame_patch_size)
         patch_dim = channels * patch_height * patch_width * frame_patch_size
         print(f'Number of Patches {num_patches} Patch dim {patch_dim}')
 
         assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
-        # [b, f, d, h, w] = [32, 1, 24, 89, 180]
+        self.pool = pool
+        # [b, f, d, h, w] = [32, 1, 24, 96, 184]
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (f pf) (h p1) (w p2) -> b (f h w) (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
         )
-        # learned positional embedding. change it to a fixed positional embedding
-        # TODO: change learned pos embedding to fixed pos embed
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+
+        # Make this a fixed embedding
+        # self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+        # pos_embedding = PositionalEncodingPermute1D(dim)
+        self.pos_embedding = Summer(PositionalEncodingPermute1D(dim))
+        # usage : x = self.pos_embedding(x)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(emb_dropout)
 
         self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
 
-        self.pool = pool
         self.to_latent = nn.Identity()
 
         self.mlp_head = nn.Sequential(
             nn.LayerNorm(dim),
-            nn.Linear(dim, num_classes)
+            nn.Linear(dim, self.num_outputs * num_classes)  # Output (batch_size, 9 * 4)
         )
 
     def forward(self, video):
-        # convert video to a pytorch tensor
-        # video = torch.tensor(video.numpy())
-        # video = video.squeeze(-1)  # Remove the extra singleton dimension at the end
-
-        # print(f'video shape {video.shape}')
-        # Pad width dimension if necessary
-        b, c, f, h, w = video.shape
-        # print(f'video shape before {video.shape}')
-        # print(f'pad height {self.pad_height} pad width {self.pad_width}')
-
-        x = self.to_patch_embedding(video)
-        b, n, _ = x.shape
+        x = self.to_patch_embedding(video) # Shape: (batch_size, num_patches, dim)
+        # print(x.shape)
+        b, n, _ = x.shape # `b` = batch_size, `n` = number of patches
 
         cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
         x = torch.cat((cls_tokens, x), dim=1)
-        x += self.pos_embedding[:, :(n + 1)]
+
+        x = self.pos_embedding(x)  # Fixed positional encoding
+       # x = x + pos_enc  # Adding the positional encoding to the patch embeddings
+
         x = self.dropout(x)
 
         x = self.transformer(x)
 
-        x = x.mean(dim = 1) if self.pool == 'mean' else x[:, 0]
+        x = x.mean(dim=1) if self.pool == 'mean' else x[:, 0]
 
         x = self.to_latent(x)
-        return self.mlp_head(x)
+        x = self.mlp_head(x)
+
+        return x.view(b, self.num_outputs, self.num_classes)  # Reshape to (batch_size, 9, 4)
+
 
 
 #### End of given code
@@ -210,39 +200,46 @@ def run_experiment(trainloader, validloader, testloader):
 
 
     criterion = torch.nn.CrossEntropyLoss()
+
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     def train(model, trainloader, validloader, criterion, optimizer, epochs=100):
-        '''
-        training loop for the 3d vit, also returns history object with training history
-        '''
         model.train()
         history = History()
-        for epoch in range(epochs):
-            total_loss, correct, total = 0, 0, 0
+        try:
+            for epoch in range(epochs):
+                total_loss, correct, total = 0, 0, 0
+                
+                for videos, labels in trainloader:
+                    optimizer.zero_grad()
+                    outputs = model(videos)  # (batch, 9, 4)
+                    # changed line
+                    loss = criterion(outputs.view(-1, 4), labels.view(-1))  # Flatten for CrossEntropyLoss
+                    
+                    loss.backward()
+                    optimizer.step()
+
+                    total_loss += loss.item()
+                    _, predicted = torch.max(outputs, dim=2)  # Get class predictions for each of the 9 outputs
+                    # another changed line
+                    correct += (predicted == labels).sum().item()
+                    total += labels.numel()  # Count all predictions (batch_size * 9)
+
+                train_acc = correct / total
+                print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f}, Accuracy: {train_acc:.4f}")
+
+                valid_loss, valid_acc = validate(model, validloader, criterion)
+                history.update(total_loss, train_acc, valid_loss, valid_acc)
             
-            for videos, labels in trainloader:
-                optimizer.zero_grad()
-                outputs = model(videos)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
+            return history
+        except KeyboardInterrupt:
+            print("Training interrupted. Saving the model and history...")
+            return model, history
+            
 
-                total_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
-                correct += (predicted == labels).sum().item()
-                total += labels.size(0)
-
-            train_acc = correct / total
-            print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss:.4f}, Accuracy: {train_acc:.4f}")
-        
-            valid_loss, valid_acc = validate(model, validloader, criterion)
-
-            history.update(total_loss, train_acc, valid_loss, valid_acc)
-        
-        return history
 
     def validate(model, validloader, criterion):
+        
         model.eval()
         total_loss, correct, total = 0, 0, 0
         
@@ -250,12 +247,14 @@ def run_experiment(trainloader, validloader, testloader):
             for videos, labels in validloader:
                 # videos, labels = videos.cuda(), labels.cuda()
                 outputs = model(videos)
-                loss = criterion(outputs, labels)
+                # this is another changed line from the previous file
+                loss = criterion(outputs.view(-1, 4), labels.view(-1))
                 
                 total_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
+                _, predicted = torch.max(outputs, dim=2)  # Get class predictions for each of the 9 outputs
+                # another changed line
                 correct += (predicted == labels).sum().item()
-                total += labels.size(0)
+                total += labels.numel()  # Count all predictions (batch_size * 9)
 
         val_acc = correct / total
         print(f"Validation Accuracy: {val_acc:.4f}, Validation Loss: {total_loss}")
@@ -269,9 +268,9 @@ def run_experiment(trainloader, validloader, testloader):
             for videos, labels in testloader:
                 # videos, labels = videos.cuda(), labels.cuda()
                 outputs = model(videos)
-                _, predicted = torch.max(outputs, 1)
+                _, predicted = torch.max(outputs, dim=2)  # Get class predictions for each of the 9 outputs
                 correct += (predicted == labels).sum().item()
-                total += labels.size(0)
+                total += labels.numel()  # Count all predictions (batch_size * 9)
         
         print(f"Test Accuracy: {correct / total:.4f}")
 
