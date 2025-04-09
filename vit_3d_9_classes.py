@@ -6,7 +6,8 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 import torch
 from positional_encodings.torch_encodings import *
-
+import pandas as pd
+import numpy as np  # Added numpy import for positional encoding
 # helpers
 
 def pair(t):
@@ -84,7 +85,7 @@ class ViT(nn.Module):
         self.num_classes = num_classes # there should be 4 for sst data, quantized
         self.num_outputs = 9  # Number of independent classifications. There are 9 since we have 9 clusters.
         
-
+        self.dim = dim  # Store dimension for positional encoding
         self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
         
         image_height, image_width = pair(image_size)
@@ -101,17 +102,15 @@ class ViT(nn.Module):
         self.pool = pool
         # [b, f, d, h, w] = [32, 1, 24, 96, 184]
         self.to_patch_embedding = nn.Sequential(
-            Rearrange('b c (f pf) (h p1) (w p2) -> b (f h w) (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
+            # changed rearrange from :
+            # 'b c (f pf) (h p1) (w p2) -> b (f h w) (p1 p2 pf c)'
+            # to 'b c (f pf) (h p1) (w p2) -> b f h w (p1 p2 pf c)'
+            # encodes the frame, height, and width as separate dimensions.
+            Rearrange('b c (f pf) (h p1) (w p2) -> b f h w (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
         )
-
-        # Make this a fixed embedding
-        # self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
-        # pos_embedding = PositionalEncodingPermute1D(dim)
-        self.pos_embedding = Summer(PositionalEncodingPermute1D(dim))
-        # usage : x = self.pos_embedding(x)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(emb_dropout)
@@ -124,24 +123,51 @@ class ViT(nn.Module):
             nn.LayerNorm(dim),
             nn.Linear(dim, self.num_outputs * num_classes)  # Output (batch_size, 9 * 4)
         )
-
+    '''
+    Mehrnaz's positional encoder
+    Uses time as a positional encoder
+    '''
+    def positional_encoding(self, position, d_model, base=10000):
+        # Initialize a zero vector
+        if isinstance(position, (np.ndarray, pd.Series, list)):
+            pos_vector = np.zeros((d_model, len(position)))
+        else:
+            pos_vector = np.zeros((d_model, ))
+        # Compute the positional encodings
+        for i in range(d_model):
+            if i % 2 == 0:
+                # Apply the sin transformation for even indices
+                pos_vector[i] = np.sin(position / (base ** (2 * i / d_model)))
+            else:
+                pos_vector[i] = np.cos(position / (
+                    base ** (2 * (i - 1) / d_model )))
+        return torch.from_numpy(pos_vector.T).float()  
+        
     def forward(self, video):
-        x = self.to_patch_embedding(video) # Shape: (batch_size, num_patches, dim)
-        # print(x.shape)
-        b, n, _ = x.shape # `b` = batch_size, `n` = number of patches
-
-        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        x = self.pos_embedding(x)  # Fixed positional encoding
-       # x = x + pos_enc  # Adding the positional encoding to the patch embeddings
-
+        x = self.to_patch_embedding(video) # Shape: (batch_size, f, h, w, dim)
+        b, f, h, w, c = x.shape # `b` = batch_size, `f` = frames, `h` = height patches, `w` = width patches, `c` = embedding dim
+        
+        # Apply positional encoding based on temporal dimension (frames)
+        # Create position indices for each frame (0 to f-1)
+        positions = np.arange(f)
+        pos_enc = self.positional_encoding(positions, self.dim)
+        
+        # Reshape x to apply positional encoding
+        # First reshape to separate out spatial and temporal dimensions
+        x = rearrange(x, 'b f h w c -> b (h w) f c')
+        
+        # Apply positional encoding to the temporal dimension
+        # pos_enc shape: (f, c)
+        pos_enc = pos_enc.to(x.device)
+        for i in range(f):
+            x[:, :, i, :] = x[:, :, i, :] + pos_enc[i]
+        
+        # Reshape back to sequence format for transformer
+        x = rearrange(x, 'b (h w) f c -> b (f h w) c', h=h, w=w)
+        
         x = self.dropout(x)
-
         x = self.transformer(x)
-
         x = x.mean(dim=1) if self.pool == 'mean' else x[:, 0]
-
         x = self.to_latent(x)
         x = self.mlp_head(x)
 
@@ -174,7 +200,7 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch
 
-def run_experiment(trainloader, validloader, testloader):
+def run_experiment(trainloader, validloader, testloader=None):
     # batch_size = 8  # Adjust as needed
     # trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
     # validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
@@ -248,6 +274,8 @@ def run_experiment(trainloader, validloader, testloader):
                 # videos, labels = videos.cuda(), labels.cuda()
                 outputs = model(videos)
                 # this is another changed line from the previous file
+                # TODO: investigate if this takes nn.CrossEntropy does (if it takes the sum or the mean)
+                #               should be taking the mean
                 loss = criterion(outputs.view(-1, 4), labels.view(-1))
                 
                 total_loss += loss.item()
@@ -261,6 +289,9 @@ def run_experiment(trainloader, validloader, testloader):
         return total_loss, val_acc
 
     def test(model, testloader):
+        if testloader == None:
+            print("No testing dataset provided")
+            return
         model.eval()
         correct, total = 0, 0
         
