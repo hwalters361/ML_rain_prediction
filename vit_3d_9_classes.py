@@ -163,15 +163,6 @@ class ViT(nn.Module):
         x = self.to_patch_embedding(video)  # Shape: (batch_size, f, h, w, dim)
         b, f, h, w, c = x.shape  # `b` = batch_size, `f` = frames, `h` = height patches, `w` = width patches, `c` = embedding dim
         # print(f"Input shape after patch embedding: {x.shape}")
-
-        ## Start of positional encoding code
-        x = torch.ones([10, 24, 80, 80, 64])
-        xall = x.split(x.shape[-1] // 4, -1)
-
-
-
-
-        #x = torch.cat(xall, -1)
         
         # Split the embedding dimension into 4 parts
         xall = x.split(x.shape[-1] // 4, -1)
@@ -179,8 +170,6 @@ class ViT(nn.Module):
         
         # Create positional encodings for each dimension
         # For temporal dimension (frames)
-        # [1, F, 1, 1, C // 4]
-        # xall[0] += self.positional_encoding(torch.arange(x.shape[1]), xall[0].shape[-1]).unsqueeze(0).unsqueeze(2).unsqueeze(2)
         f_positions = torch.arange(f, device=x.device)
         f_enc = self.positional_encoding(f_positions, xall[0].shape[-1])
         # Reshape to [1, F, 1, 1, C // 4] and repeat for batch size
@@ -191,8 +180,6 @@ class ViT(nn.Module):
         # print(f"xall[0] shape: {xall[0].shape}")
         
         # For height dimension
-        # [1, 1, H, 1, C // 4]
-        #xall[1] += self.positional_encoding(torch.arange(x.shape[2]), xall[1].shape[-1]).unsqueeze(0).unsqueeze(0).unsqueeze(2)
         h_positions = torch.arange(h, device=x.device)
         h_enc = self.positional_encoding(h_positions, xall[1].shape[-1])
         # Reshape to [1, 1, H, 1, C // 4] and repeat for batch size
@@ -203,9 +190,6 @@ class ViT(nn.Module):
         # print(f"xall[1] shape: {xall[1].shape}")
         
         # For width dimension
-        # [1, 1, 1, W, C // 4]
-        #xall[2] += self.positional_encoding(torch.arange(x.shape[2]), xall[2].shape[-1]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
-
         w_positions = torch.arange(w, device=x.device)
         w_enc = self.positional_encoding(w_positions, xall[2].shape[-1])
         # Reshape to [1, 1, 1, W, C // 4] and repeat for batch size
@@ -290,14 +274,14 @@ class SSTDataset(torch.utils.data.Dataset):
     def __init__(self, videos, labels, start_months=None):
         self.videos = videos
         self.labels = labels
-        # self.start_months = start_months  # Starting month for each sequence (0-11)
+        self.start_months = start_months  # Starting month for each sequence (0-11)
         
     def __len__(self):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        # return self.videos[idx], self.labels[idx], self.start_months[idx]
-        return self.videos[idx], self.labels[idx]
+        return self.videos[idx], self.labels[idx]#, self.start_months[idx]
+        # return self.videos[idx], self.labels[idx]
 
 # Define patch sizes for padding calculation
 IMAGE_PATCH_SIZE = (8, 8)  # Example patch size, adjust accordingly
@@ -347,12 +331,12 @@ def download_and_prepare_dataset(data_path, image_patch_size=IMAGE_PATCH_SIZE):
 
         train_labels = data["train_labels"]
         test_labels = data["test_labels"]
+
+        train_start_months = data["train_start_months"]
+        test_start_months = data["test_start_months"]
     
     # # Extract starting months from the data
-    # # Assuming the data is organized chronologically, we can calculate the starting month
-    # # from the index in the original time series
-    # train_start_months = np.array([(i % 12) for i in range(len(train_videos))])
-    # test_start_months = np.array([(i % 12) for i in range(len(test_videos))])
+    
     # Convert to PyTorch tensors
     train_videos = torch.tensor(train_videos, dtype=torch.float32)
     test_videos = torch.tensor(test_videos, dtype=torch.float32)
@@ -369,11 +353,12 @@ def download_and_prepare_dataset(data_path, image_patch_size=IMAGE_PATCH_SIZE):
     train_labels = torch.tensor(train_labels, dtype=torch.long)
     test_labels = torch.tensor(test_labels, dtype=torch.long)
 
-    # train_start_months = torch.tensor(train_start_months, dtype=torch.int)
-    # test_start_months = torch.tensor(test_start_months, dtype=torch.int)
+    train_start_months = torch.tensor(train_start_months, dtype=torch.int)
+    test_start_months = torch.tensor(test_start_months, dtype=torch.int)
 
-    # return (train_videos, train_labels), (valid_videos, valid_labels), (test_videos, test_labels)
-    return (train_videos, train_labels), (test_videos, test_labels)
+    # return (train_videos, train_labels), (test_videos, test_labels)
+    return (train_videos, train_labels, train_start_months), (test_videos, test_labels, test_start_months)
+    # return (train_videos, train_labels), (test_videos, test_labels)
 
 
 def run_experiment(trainloader, validloader, testloader=None, epochs = 100):
