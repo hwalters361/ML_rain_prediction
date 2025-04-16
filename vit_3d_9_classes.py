@@ -130,90 +130,125 @@ class ViT(nn.Module):
     '''
     Mehrnaz's positional encoder
     '''
-    def positional_encoding(self, position, d_model, base=10000, start_month=None):
+    def positional_encoding(self, position, d_model, base=10000):
         """
-        Create sinusoidal positional encodings optimized for temporal data with starting month information.
+        Create sinusoidal positional encodings using PyTorch.
         Args:
-            position: Position indices (temporal or spatial)
+            position: Position indices (temporal or spatial) as a PyTorch tensor
             d_model: Dimension of the model
             base: Base for the sinusoidal functions
-            start_month: Starting month of the sequence (0-11)
         """
-        # Initialize a zero vector
-        if isinstance(position, (np.ndarray, pd.Series, list)):
-            pos_vector = np.zeros((len(position), d_model))
-        else:
-            pos_vector = np.zeros((1, d_model))
+        # Ensure position is a PyTorch tensor
+        if not torch.is_tensor(position):
+            position = torch.tensor(position)
         
-        # Convert start_month to numpy array if it's a tensor
-        if torch.is_tensor(start_month):
-            start_month = start_month.cpu().numpy()
+        # Get the length of the position tensor
+        seq_len = position.shape[0] if len(position.shape) > 0 else 1
         
-        # Ensure start_month is a scalar
-        if isinstance(start_month, (np.ndarray, list)):
-            start_month = start_month[0]  # Take the first value if it's an array
+        # Create a tensor for the positional encodings
+        pos_vector = torch.zeros((seq_len, d_model))
         
-        # Calculate phase if start_month is provided
-        phase = (start_month / 12.0) * 2 * np.pi if start_month is not None else 0
-        
-        # Compute the positional encodings
+        # Compute the positional encodings using PyTorch
         for i in range(d_model):
             if i % 2 == 0:
-                # For even indices: sin(position/10000^(2i/d_model) + phase)
-                pos_vector[:, i] = np.sin(position / (base ** (2 * i / d_model)) + phase)
+                # For even indices: sin(position/10000^(2i/d_model))
+                pos_vector[:, i] = torch.sin(position / (base ** (2 * i / d_model)))
             else:
-                # For odd indices: cos(position/10000^(2(i-1)/d_model) + phase)
-                pos_vector[:, i] = np.cos(position / (base ** (2 * (i - 1) / d_model)) + phase)
+                # For odd indices: cos(position/10000^(2(i-1)/d_model))
+                pos_vector[:, i] = torch.cos(position / (base ** (2 * (i - 1) / d_model)))
         
-        return torch.from_numpy(pos_vector).float()
+        return pos_vector
 
     def forward(self, video, start_month=None):
         x = self.to_patch_embedding(video)  # Shape: (batch_size, f, h, w, dim)
         b, f, h, w, c = x.shape  # `b` = batch_size, `f` = frames, `h` = height patches, `w` = width patches, `c` = embedding dim
+        # print(f"Input shape after patch embedding: {x.shape}")
+
+        ## Start of positional encoding code
+        x = torch.ones([10, 24, 80, 80, 64])
+        xall = x.split(x.shape[-1] // 4, -1)
+
+
+
+
+        #x = torch.cat(xall, -1)
         
-        # Create position indices for temporal dimension (frames)
-        f_positions = np.arange(f)
+        # Split the embedding dimension into 4 parts
+        xall = x.split(x.shape[-1] // 4, -1)
+        # print(f"Split shapes: {[x.shape for x in xall]}")
         
-        # Handle start_month for each sample in the batch
+        # Create positional encodings for each dimension
+        # For temporal dimension (frames)
+        # [1, F, 1, 1, C // 4]
+        # xall[0] += self.positional_encoding(torch.arange(x.shape[1]), xall[0].shape[-1]).unsqueeze(0).unsqueeze(2).unsqueeze(2)
+        f_positions = torch.arange(f, device=x.device)
+        f_enc = self.positional_encoding(f_positions, xall[0].shape[-1])
+        # Reshape to [1, F, 1, 1, C // 4] and repeat for batch size
+        f_enc = f_enc.unsqueeze(0).unsqueeze(2).unsqueeze(2)
+        # print(f"f_enc shape before repeat: {f_enc.shape}")
+        f_enc = f_enc.repeat(b, 1, h, w, 1)
+        # print(f"f_enc shape after repeat: {f_enc.shape}")
+        # print(f"xall[0] shape: {xall[0].shape}")
+        
+        # For height dimension
+        # [1, 1, H, 1, C // 4]
+        #xall[1] += self.positional_encoding(torch.arange(x.shape[2]), xall[1].shape[-1]).unsqueeze(0).unsqueeze(0).unsqueeze(2)
+        h_positions = torch.arange(h, device=x.device)
+        h_enc = self.positional_encoding(h_positions, xall[1].shape[-1])
+        # Reshape to [1, 1, H, 1, C // 4] and repeat for batch size
+        h_enc = h_enc.unsqueeze(0).unsqueeze(1).unsqueeze(3)
+        # print(f"h_enc shape before repeat: {h_enc.shape}")
+        h_enc = h_enc.repeat(b, f, 1, w, 1)
+        # print(f"h_enc shape after repeat: {h_enc.shape}")
+        # print(f"xall[1] shape: {xall[1].shape}")
+        
+        # For width dimension
+        # [1, 1, 1, W, C // 4]
+        #xall[2] += self.positional_encoding(torch.arange(x.shape[2]), xall[2].shape[-1]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
+
+        w_positions = torch.arange(w, device=x.device)
+        w_enc = self.positional_encoding(w_positions, xall[2].shape[-1])
+        # Reshape to [1, 1, 1, W, C // 4] and repeat for batch size
+        w_enc = w_enc.unsqueeze(0).unsqueeze(1).unsqueeze(1)
+        # print(f"w_enc shape before repeat: {w_enc.shape}")
+        w_enc = w_enc.repeat(b, f, h, 1, 1)
+        # print(f"w_enc shape after repeat: {w_enc.shape}")
+        # print(f"xall[2] shape: {xall[2].shape}")
+        
+        # For temporal dimension with start_month (if provided)
         if start_month is not None:
-            # Create a list to store encodings for each sample
-            f_pos_enc_list = []
-            for i in range(b):
-                sample_start_month = start_month[i].item() if torch.is_tensor(start_month) else start_month[i]
-                f_pos_enc = self.positional_encoding(f_positions, c, start_month=sample_start_month)
-                f_pos_enc_list.append(f_pos_enc)
-            f_pos_enc = torch.stack(f_pos_enc_list)  # Shape: (batch_size, f, c)
+            # Convert start_month to tensor if it's not already
+            if not torch.is_tensor(start_month):
+                start_month = torch.tensor(start_month, device=x.device)
+            
+            # Calculate (position + start_month) % 12 for each sample in the batch
+            f_positions_with_month = (f_positions.unsqueeze(0) + start_month.unsqueeze(1)) % 12
+            
+            # Apply positional encoding with start_month
+            f_month_enc = self.positional_encoding(f_positions_with_month, xall[3].shape[-1])
+            # Reshape to [b, F, 1, 1, C // 4]
+            f_month_enc = f_month_enc.unsqueeze(2).unsqueeze(2)
+            # print(f"f_month_enc shape before repeat: {f_month_enc.shape}")
+            f_month_enc = f_month_enc.repeat(1, 1, h, w, 1)
+            # print(f"f_month_enc shape after repeat: {f_month_enc.shape}")
         else:
-            f_pos_enc = self.positional_encoding(f_positions, c)
-            f_pos_enc = f_pos_enc.unsqueeze(0).repeat(b, 1, 1)  # Shape: (batch_size, f, c)
+            # If no start_month provided, use regular temporal encoding
+            f_month_enc = f_enc  # Reuse the same temporal encoding
         
-        # Create position indices for spatial dimensions (height and width)
-        h_positions = np.arange(h)
-        w_positions = np.arange(w)
-        h_pos_enc = self.positional_encoding(h_positions, c)  # Shape: (h, c)
-        w_pos_enc = self.positional_encoding(w_positions, c)  # Shape: (w, c)
+        # print(f"xall[3] shape: {xall[3].shape}")
         
-        # Move encodings to the correct device
-        f_pos_enc = f_pos_enc.to(x.device)
-        h_pos_enc = h_pos_enc.to(x.device)
-        w_pos_enc = w_pos_enc.to(x.device)
+        # Apply positional encodings to each part
+        # Make sure the dimensions match before adding
+        part0 = xall[0] + f_enc
+        part1 = xall[1] + h_enc
+        part2 = xall[2] + w_enc
+        part3 = xall[3] + f_month_enc
         
-        # Create a working copy to avoid modifying x in-place
-        x_encoded = x.clone()
-        
-        # Apply temporal positional encoding
-        for i in range(f):
-            x_encoded[:, i, :, :, :] += f_pos_enc[:, i].unsqueeze(1).unsqueeze(1).unsqueeze(1)
-        
-        # Apply spatial positional encodings
-        for j in range(h):
-            x_encoded[:, :, j, :, :] += h_pos_enc[j].unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        
-        for k in range(w):
-            x_encoded[:, :, :, k, :] += w_pos_enc[k].unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        # Concatenate the parts back together
+        x = torch.cat([part0, part1, part2, part3], -1)
         
         # Reshape for transformer processing
-        x = rearrange(x_encoded, 'b f h w c -> b (f h w) c')
+        x = rearrange(x, 'b f h w c -> b (f h w) c')
         
         x = self.dropout(x)
         x = self.transformer(x)
@@ -252,23 +287,25 @@ import torch
 
 class SSTDataset(torch.utils.data.Dataset):
     """Dataset for loading SST data with starting month information."""
-    def __init__(self, videos, labels, start_months):
+    def __init__(self, videos, labels, start_months=None):
         self.videos = videos
         self.labels = labels
-        self.start_months = start_months  # Starting month for each sequence (0-11)
+        # self.start_months = start_months  # Starting month for each sequence (0-11)
         
     def __len__(self):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        return self.videos[idx], self.labels[idx], self.start_months[idx]
+        # return self.videos[idx], self.labels[idx], self.start_months[idx]
+        return self.videos[idx], self.labels[idx]
+
 # Define patch sizes for padding calculation
 IMAGE_PATCH_SIZE = (8, 8)  # Example patch size, adjust accordingly
 FRAME_PATCH_SIZE = 8
 
-def prepare_dataloader(videos, labels, start_months, loader_type="train", batch_size=32):
+def prepare_dataloader(videos, labels, loader_type="train", batch_size=32):
     """Creates a PyTorch DataLoader with preprocessed videos and starting month information."""
-    dataset = SSTDataset(videos, labels, start_months)
+    dataset = SSTDataset(videos, labels)
     
     if loader_type == "train":
         sampler = RandomSampler(dataset)
@@ -311,11 +348,11 @@ def download_and_prepare_dataset(data_path, image_patch_size=IMAGE_PATCH_SIZE):
         train_labels = data["train_labels"]
         test_labels = data["test_labels"]
     
-    # Extract starting months from the data
-    # Assuming the data is organized chronologically, we can calculate the starting month
-    # from the index in the original time series
-    train_start_months = np.array([(i % 12) for i in range(len(train_videos))])
-    test_start_months = np.array([(i % 12) for i in range(len(test_videos))])
+    # # Extract starting months from the data
+    # # Assuming the data is organized chronologically, we can calculate the starting month
+    # # from the index in the original time series
+    # train_start_months = np.array([(i % 12) for i in range(len(train_videos))])
+    # test_start_months = np.array([(i % 12) for i in range(len(test_videos))])
     # Convert to PyTorch tensors
     train_videos = torch.tensor(train_videos, dtype=torch.float32)
     test_videos = torch.tensor(test_videos, dtype=torch.float32)
@@ -332,14 +369,14 @@ def download_and_prepare_dataset(data_path, image_patch_size=IMAGE_PATCH_SIZE):
     train_labels = torch.tensor(train_labels, dtype=torch.long)
     test_labels = torch.tensor(test_labels, dtype=torch.long)
 
-    train_start_months = torch.tensor(train_start_months, dtype=torch.int)
-    test_start_months = torch.tensor(test_start_months, dtype=torch.int)
+    # train_start_months = torch.tensor(train_start_months, dtype=torch.int)
+    # test_start_months = torch.tensor(test_start_months, dtype=torch.int)
 
     # return (train_videos, train_labels), (valid_videos, valid_labels), (test_videos, test_labels)
-    return (train_videos, train_labels, train_start_months), (test_videos, test_labels, test_start_months)
+    return (train_videos, train_labels), (test_videos, test_labels)
 
 
-def run_experiment(trainloader, validloader, testloader=None):
+def run_experiment(trainloader, validloader, testloader=None, epochs = 100):
     # batch_size = 8  # Adjust as needed
     # trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
     # validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
@@ -376,9 +413,9 @@ def run_experiment(trainloader, validloader, testloader=None):
                 total_loss, correct, total = 0, 0, 0
                 num_batches = 0
                 
-                for videos, labels, start_months in trainloader:
+                for videos, labels in trainloader:
                     optimizer.zero_grad()
-                    outputs = model(videos, start_month=start_months)  # Pass start_month to model
+                    outputs = model(videos)  # Removed start_month parameter
                     loss = criterion(outputs.view(-1, 4), labels.view(-1))
                     
                     loss.backward()
@@ -394,7 +431,7 @@ def run_experiment(trainloader, validloader, testloader=None):
                 avg_train_loss = total_loss / num_batches
 
                 train_acc = correct / total
-                print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_train_loss:.4f} {num_batches}, Accuracy: {train_acc:.4f}")
+                print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_train_loss:.4f}, Accuracy: {train_acc:.4f}")
 
                 valid_loss, valid_acc = validate(model, validloader, criterion)
                 history.update(avg_train_loss, train_acc, valid_loss, valid_acc)
@@ -412,7 +449,7 @@ def run_experiment(trainloader, validloader, testloader=None):
         num_batches = 0
         
         with torch.no_grad():
-            for videos, labels, _ in validloader:
+            for videos, labels in validloader:
                 outputs = model(videos)
                 loss = criterion(outputs.view(-1, 4), labels.view(-1))
                 
@@ -437,7 +474,7 @@ def run_experiment(trainloader, validloader, testloader=None):
         correct, total = 0, 0
         
         with torch.no_grad():
-            for videos, labels, _ in testloader:
+            for videos, labels in testloader:
                 outputs = model(videos)
                 _, predicted = torch.max(outputs, dim=2)
                 correct += (predicted == labels).sum().item()
@@ -446,7 +483,7 @@ def run_experiment(trainloader, validloader, testloader=None):
         print(f"Test Accuracy: {correct / total:.4f}")
 
     # Train the model
-    history = train(model, trainloader, validloader, criterion, optimizer, epochs=100)
+    history = train(model, trainloader, validloader, criterion, optimizer, epochs)
 
     # Run evaluation
     # test(model, testloader)
