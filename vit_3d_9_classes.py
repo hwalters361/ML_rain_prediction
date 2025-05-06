@@ -53,15 +53,18 @@ class Attention(nn.Module):
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, mask_patch=-1):
         x = self.norm(x)
         qkv = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
-
+        # batch x heads x number of patches x number of patches
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-
+        # set column of matrix to negative number
+        if mask_patch >=0:
+            attn[:, :, mask_patch, :] = -torch.inf
         attn = self.attend(dots)
         attn = self.dropout(attn)
+        
 
         out = torch.matmul(attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
@@ -280,8 +283,10 @@ class SSTDataset(torch.utils.data.Dataset):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        return self.videos[idx], self.labels[idx]#, self.start_months[idx]
-        # return self.videos[idx], self.labels[idx]
+        if self.start_months is not None:
+            return self.videos[idx], self.labels[idx], self.start_months[idx]
+        else:
+            return self.videos[idx], self.labels[idx]
 
 # Define patch sizes for padding calculation
 IMAGE_PATCH_SIZE = (8, 8)  # Example patch size, adjust accordingly
@@ -360,81 +365,261 @@ def download_and_prepare_dataset(data_path, image_patch_size=IMAGE_PATCH_SIZE):
     return (train_videos, train_labels, train_start_months), (test_videos, test_labels, test_start_months)
     # return (train_videos, train_labels), (test_videos, test_labels)
 
+def analyze_patch_importance(model, dataloader, criterion, device):
+    """
+    Analyzes the importance of each patch by masking it out and measuring performance impact.
+    
+    Args:
+        model: Trained ViT model
+        dataloader: DataLoader containing validation/test data
+        criterion: Loss function
+        device: Device to run computations on
+    
+    Returns:
+        patch_importance: Dictionary containing importance scores for each patch
+    """
+    model.eval()
+    original_loss, original_acc = 0, 0
+    total_samples = 0
+    correct_predictions = 0
+    
+    # First, get baseline performance
+    with torch.no_grad():
+        for videos, labels in dataloader:
+            videos, labels = videos.to(device), labels.to(device)
+            outputs = model(videos)
+            loss = criterion(outputs.view(-1, 4), labels.view(-1))
+            original_loss += loss.item()
+            
+            _, predicted = torch.max(outputs, dim=2)
+            correct_predictions += (predicted == labels).sum().item()
+            total_samples += labels.numel()
+    
+    original_loss /= len(dataloader)
+    original_acc = correct_predictions / total_samples
+    
+    # Get patch dimensions
+    b, c, f, h, w = next(iter(dataloader))[0].shape
+    patch_h, patch_w = model.to_patch_embedding[0].p1, model.to_patch_embedding[0].p2
+    patch_f = model.to_patch_embedding[0].pf
+    
+    num_patches_h = h // patch_h
+    num_patches_w = w // patch_w
+    num_patches_f = f // patch_f
+    
+    # Initialize importance scores
+    patch_importance = {
+        'loss_impact': torch.zeros(num_patches_f, num_patches_h, num_patches_w),
+        'acc_impact': torch.zeros(num_patches_f, num_patches_h, num_patches_w)
+    }
+    
+    # Test each patch position
+    for f_idx in range(num_patches_f):
+        for h_idx in range(num_patches_h):
+            for w_idx in range(num_patches_w):
+                total_loss = 0
+                correct_predictions = 0
+                total_samples = 0
+                
+                with torch.no_grad():
+                    for videos, labels in dataloader:
+                        videos, labels = videos.to(device), labels.to(device)
+                        
+                        # Create a copy of the input
+                        masked_videos = videos.clone()
+                        
+                        # Mask out the current patch
+                        f_start = f_idx * patch_f
+                        f_end = (f_idx + 1) * patch_f
+                        h_start = h_idx * patch_h
+                        h_end = (h_idx + 1) * patch_h
+                        w_start = w_idx * patch_w
+                        w_end = (w_idx + 1) * patch_w
+                        
+                        masked_videos[:, :, f_start:f_end, h_start:h_end, w_start:w_end] = 0
+                        
+                        # Get predictions with masked patch
+                        outputs = model(masked_videos)
+                        loss = criterion(outputs.view(-1, 4), labels.view(-1))
+                        total_loss += loss.item()
+                        
+                        _, predicted = torch.max(outputs, dim=2)
+                        correct_predictions += (predicted == labels).sum().item()
+                        total_samples += labels.numel()
+                
+                # Calculate impact
+                masked_loss = total_loss / len(dataloader)
+                masked_acc = correct_predictions / total_samples
+                
+                # Store importance scores (higher values mean more important)
+                patch_importance['loss_impact'][f_idx, h_idx, w_idx] = masked_loss - original_loss
+                patch_importance['acc_impact'][f_idx, h_idx, w_idx] = original_acc - masked_acc
+    
+    return patch_importance
 
-def run_experiment(trainloader, validloader, testloader=None, epochs = 100):
-    # batch_size = 8  # Adjust as needed
-    # trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True)
-    # validloader = DataLoader(validset, batch_size=batch_size, shuffle=False)
-    # testloader = DataLoader(testset, batch_size=batch_size, shuffle=False)
-    # PATCH_SIZE = (8, 8, 8)
-    # INPUT_SHAPE = (24, 89, 180, 1)
-    # Define model
-    # def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
+def visualize_patch_importance(patch_importance, save_path=None):
+    """
+    Visualizes patch importance scores.
+    
+    Args:
+        patch_importance: Dictionary containing importance scores
+        save_path: Optional path to save the visualization
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    # Create a figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Plot loss impact
+    sns.heatmap(patch_importance['loss_impact'].mean(dim=0), 
+                ax=ax1, cmap='YlOrRd')
+    ax1.set_title('Patch Importance (Loss Impact)')
+    ax1.set_xlabel('Width Patch Index')
+    ax1.set_ylabel('Height Patch Index')
+    
+    # Plot accuracy impact
+    sns.heatmap(patch_importance['acc_impact'].mean(dim=0), 
+                ax=ax2, cmap='YlOrRd')
+    ax2.set_title('Patch Importance (Accuracy Impact)')
+    ax2.set_xlabel('Width Patch Index')
+    ax2.set_ylabel('Height Patch Index')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+    plt.show()
+
+class EarlyStopping:
+    """
+    Early stopping handler to prevent overfitting.
+    """
+    def __init__(self, patience=7, min_delta=0, mode='min'):
+        """
+        Args:
+            patience (int): Number of epochs to wait for improvement before stopping
+            min_delta (float): Minimum change in monitored value to qualify as an improvement
+            mode (str): One of {'min', 'max'}. In 'min' mode, training will stop when the quantity monitored has stopped decreasing.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_value = None
+        self.early_stop = False
+        self.best_model_state = None
+        
+    def __call__(self, value, model):
+        if self.best_value is None:
+            self.best_value = value
+            self.best_model_state = model.state_dict().copy()
+        elif self.mode == 'min':
+            if value < self.best_value - self.min_delta:
+                self.best_value = value
+                self.counter = 0
+                self.best_model_state = model.state_dict().copy()
+            else:
+                self.counter += 1
+        else:  # mode == 'max'
+            if value > self.best_value + self.min_delta:
+                self.best_value = value
+                self.counter = 0
+                self.best_model_state = model.state_dict().copy()
+            else:
+                self.counter += 1
+                
+        if self.counter >= self.patience:
+            self.early_stop = True
+            
+    def load_best_model(self, model):
+        """Load the best model state."""
+        if self.best_model_state is not None:
+            model.load_state_dict(self.best_model_state)
+        return model
+
+def run_experiment(trainloader, validloader, testloader=None, start_months=None, epochs=100):
+    # Visualize patches for the first sample in the training set
+    from threeDViT_visualization import visualize_patches_from_dataloader
+    visualize_patches_from_dataloader(trainloader, IMAGE_PATCH_SIZE, FRAME_PATCH_SIZE)
+    
+    # Get device
+    from utils import get_device, to_device
+    device = get_device()
+    print(f"Using device: {device}")
+    
+    # Create and move model to device
     model = ViT(
         image_size=(96,184),  
         image_patch_size=(8, 8),
         frames=24, 
         frame_patch_size=8,
         num_classes=4, 
-        dim=128, # initially 512
-        depth=4, # initially 6
-        heads=4, # initially 8
-        dim_head= 32, #initially 64
-        mlp_dim=256, # initially 1024
+        dim=128,
+        depth=4,
+        heads=4,
+        dim_head=32,
+        mlp_dim=256,
         channels=1,
     )
-    # .cuda()  # Move to GPU if available
-
+    model = to_device(model)
 
     criterion = torch.nn.CrossEntropyLoss()
-
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    
+    # Initialize early stopping
+    early_stopping = EarlyStopping(patience=10, min_delta=0.001, mode='min')
 
     def train(model, trainloader, validloader, criterion, optimizer, epochs=100):
         model.train()
         history = History()
-        try:
-            for epoch in range(epochs):
-                total_loss, correct, total = 0, 0, 0
-                num_batches = 0
+        for epoch in range(epochs):
+            total_loss, correct, total = 0, 0, 0
+            num_batches = 0
+            for videos, labels in trainloader:
+                # Move data to device
+                videos, labels = to_device([videos, labels])
                 
-                for videos, labels in trainloader:
-                    optimizer.zero_grad()
-                    outputs = model(videos)  # Removed start_month parameter
-                    loss = criterion(outputs.view(-1, 4), labels.view(-1))
-                    
-                    loss.backward()
-                    optimizer.step()
-                    
-                    total_loss += loss.item()
-                    _, predicted = torch.max(outputs, dim=2)
-                    correct += (predicted == labels).sum().item()
-                    total += labels.numel()
-                    num_batches += 1
+                optimizer.zero_grad()
+                outputs = model(videos)
+                loss = criterion(outputs.view(-1, 4), labels.view(-1))
                 
-                # Average the loss over number of batches
-                avg_train_loss = total_loss / num_batches
+                loss.backward()
+                optimizer.step()
 
-                train_acc = correct / total
-                print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_train_loss:.4f}, Accuracy: {train_acc:.4f}")
+                total_loss += loss.item()
+                _, predicted = torch.max(outputs, dim=2)
+                correct += (predicted == labels).sum().item()
+                total += labels.numel()
+                num_batches += 1
 
-                valid_loss, valid_acc = validate(model, validloader, criterion)
-                history.update(avg_train_loss, train_acc, valid_loss, valid_acc)
+            # Average the loss over number of batches
+            avg_loss = total_loss / num_batches
+            train_acc = correct / total
+            print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Accuracy: {train_acc:.4f}")
+
+            valid_loss, valid_acc = validate(model, validloader, criterion)
+            history.update(avg_loss, train_acc, valid_loss, valid_acc)
             
-            return history
-        except KeyboardInterrupt:
-            print("Training interrupted. Saving the model and history...")
-            return model, history
-            
-
+            # Early stopping check
+            early_stopping(valid_loss, model)
+            if early_stopping.early_stop:
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                break
+        
+        # Load the best model before returning
+        model = early_stopping.load_best_model(model)
+        return history
 
     def validate(model, validloader, criterion):
         model.eval()
         total_loss, correct, total = 0, 0, 0
         num_batches = 0
-        
         with torch.no_grad():
             for videos, labels in validloader:
+                # Move data to device
+                videos, labels = to_device([videos, labels])
+                
                 outputs = model(videos)
                 loss = criterion(outputs.view(-1, 4), labels.view(-1))
                 
@@ -445,21 +630,24 @@ def run_experiment(trainloader, validloader, testloader=None, epochs = 100):
                 num_batches += 1
 
         # Average the loss over number of batches
-
         avg_val_loss = total_loss / num_batches
         val_acc = correct / total
         print(f"Validation Accuracy: {val_acc:.4f}, Validation Loss: {avg_val_loss:.4f}")
         return avg_val_loss, val_acc
 
     def test(model, testloader):
-        if testloader == None:
+        if testloader is None:
             print("No testing dataset provided")
             return
+            
         model.eval()
         correct, total = 0, 0
         
         with torch.no_grad():
             for videos, labels in testloader:
+                # Move data to device
+                videos, labels = to_device([videos, labels])
+                
                 outputs = model(videos)
                 _, predicted = torch.max(outputs, dim=2)
                 correct += (predicted == labels).sum().item()
@@ -471,7 +659,13 @@ def run_experiment(trainloader, validloader, testloader=None, epochs = 100):
     history = train(model, trainloader, validloader, criterion, optimizer, epochs)
 
     # Run evaluation
-    # test(model, testloader)
+    test(model, testloader)
+    
+    # After training, analyze patch importance
+    print("\nAnalyzing patch importance...")
+    patch_importance = analyze_patch_importance(model, validloader, criterion, device)
+    visualize_patch_importance(patch_importance, save_path="patch_importance.png")
+    
     return model, history
 
 
