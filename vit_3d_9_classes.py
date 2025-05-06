@@ -662,9 +662,9 @@ def run_experiment(trainloader, validloader, testloader=None, start_months=None,
     test(model, testloader)
     
     # After training, analyze patch importance
-    print("\nAnalyzing patch importance...")
-    patch_importance = analyze_patch_importance(model, validloader, criterion, device)
-    visualize_patch_importance(patch_importance, save_path="patch_importance.png")
+    # print("\nAnalyzing patch importance...")
+    # patch_importance = analyze_patch_importance(model, validloader, criterion, device)
+    # visualize_patch_importance(patch_importance, save_path="patch_importance.png")
     
     return model, history
 
