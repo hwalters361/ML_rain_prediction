@@ -539,10 +539,6 @@ class EarlyStopping:
         return model
 
 def run_experiment(trainloader, validloader, testloader=None, start_months=None, epochs=100):
-    # Visualize patches for the first sample in the training set
-    from threeDViT_visualization import visualize_patches_from_dataloader
-    visualize_patches_from_dataloader(trainloader, IMAGE_PATCH_SIZE, FRAME_PATCH_SIZE)
-    
     # Get device
     from utils import get_device, to_device
     device = get_device()
