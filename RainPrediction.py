@@ -159,29 +159,21 @@ class RainPrediction(nn.Module):
         super().__init__()
         self.num_outputs = 9  # Number of independent classifications
         
-        # Enhanced architecture with more layers and batch normalization
-        # self.model = nn.Sequential(
-        #     nn.Dropout(0.05),
-        #     nn.Linear(num_regions, 20),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.05),
-        #     nn.Linear(20, num_classes * self.num_outputs)  # Multiply by num_outputs to get total output size
-        # )
+        # Large model with high capacity for overfitting
         self.model = nn.Sequential(
-            nn.Dropout(0.1),
-            nn.Linear(num_regions, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(num_regions, 512),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
             nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(64, 32),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(32, num_classes * self.num_outputs)  # Multiply by num_outputs to get total output size
+            nn.Linear(64, num_classes * self.num_outputs)  # Multiply by num_outputs to get total output size
         )
         
 
@@ -204,7 +196,7 @@ def run_experiment(trainloader, validloader, epochs=100):
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
     def train(model, trainloader, validloader, criterion, optimizer, epochs=100):
@@ -293,26 +285,26 @@ def run_experiment(trainloader, validloader, epochs=100):
     # test(model, testloader)
     return model, history
 
-# Remove the old training loop and replace with:
-if __name__ == "__main__":
-    # Load and prepare dataset
-    data_path = "data/cluster_sst.npz"  # Adjust path as needed
-    (train_videos, train_labels, train_start_months), (test_videos, test_labels, test_start_months) = download_and_prepare_dataset(data_path)
+# # Remove the old training loop and replace with:
+# if __name__ == "__main__":
+#     # Load and prepare dataset
+#     data_path = "data/cluster_sst.npz"  # Adjust path as needed
+#     (train_videos, train_labels, train_start_months), (test_videos, test_labels, test_start_months) = download_and_prepare_dataset(data_path)
     
-    # Split train into train and validation
-    train_videos, valid_videos, train_labels, valid_labels = train_test_split(
-        train_videos, train_labels, test_size=0.2, random_state=seed
-    )
+#     # Split train into train and validation
+#     train_videos, valid_videos, train_labels, valid_labels = train_test_split(
+#         train_videos, train_labels, test_size=0.2, random_state=seed
+#     )
     
-    # Create dataloaders
-    trainloader = prepare_dataloader(train_videos, train_labels, "train")
-    validloader = prepare_dataloader(valid_videos, valid_labels, "valid")
-    # testloader = prepare_dataloader(test_videos, test_labels, "test")
+#     # Create dataloaders
+#     trainloader = prepare_dataloader(train_videos, train_labels, "train")
+#     validloader = prepare_dataloader(valid_videos, valid_labels, "valid")
+#     # testloader = prepare_dataloader(test_videos, test_labels, "test")
     
-    # Run experiment
-    model, history = run_experiment(trainloader, validloader, validloader, epochs=100)
+#     # Run experiment
+#     model, history = run_experiment(trainloader, validloader, validloader, epochs=100)
     
-    # Plot the training history
-    plotHistory(history)
+#     # Plot the training history
+#     plotHistory(history)
 
 
